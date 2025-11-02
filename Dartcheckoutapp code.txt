@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dart Out Suggestion Board</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        /* Custom styles for the dartboard and interactivity */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+
+        .highlight-target {
+            filter: drop-shadow(0 0 10px rgba(253, 224, 71, 1));
+            transition: all 0.3s ease-in-out;
+            fill: #fcd34d !important; /* Yellow-300 override */
+            stroke-width: 0.5px !important;
+            stroke: #eab308 !important;
+        }
+
+        /* SVG styling for dartboard sections */
+        .single-bed-inner { fill: #fef3c7; stroke: #1f2937; } /* Cream/Beige */
+        .single-bed-outer { fill: #ffffff; stroke: #1f2937; } /* White */
+        /* Dynamic Red/Green colors for Doubles and Triples */
+        .red-ring { fill: #ef4444; stroke: #1f2937; } /* Red */
+        .green-ring { fill: #22c55e; stroke: #1f2937; } /* Green */
+        
+        /* Updated Bullseye colors and IDs */
+        .bullseye-outer { fill: #22c55e; stroke: #1f2937; } /* Green 25 (Single Bull) */
+        .bullseye-center { fill: #ef4444; stroke: #1f2937; } /* Red Bull 50 (Double Bull) */
+
+        /* Specific coloring for numbers */
+        .score-white { fill: white; }
+        .score-black { fill: #1f2937; }
+
+        /* General paths that need an ID for coloring/highlighting */
+        .dart-section {
+            transition: fill 0.3s, filter 0.3s;
+        }
+
+        /* Ensure input and buttons are readable */
+        input:focus, button:focus {
+            outline: 2px solid #3b82f6;
+            outline-offset: 2px;
+        }
+
+        /* Responsive Canvas Scaling */
+        #dartboard-container {
+            width: 100%;
+            max-width: 400px; /* Max size for the board */
+            margin: 0 auto;
+            position: relative;
+        }
+        #dartboard-svg {
+            display: block;
+            width: 100%;
+            height: auto;
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-8">
+
+    <div class="max-w-4xl mx-auto">
+        <header class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-800">🎯 Dart Checkout Assistant</h1>
+            <p class="text-gray-600 mt-1">Enter your remaining score (2-170) to see the best three-dart out.</p>
+        </header>
+
+        <!-- Input and Control Panel -->
+        <div class="bg-white p-6 rounded-xl shadow-lg mb-8 border border-gray-200">
+            <div class="flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-4">
+                <div class="w-full sm:w-1/2">
+                    <label for="score-input" class="block text-sm font-medium text-gray-700 mb-1">Current Score (2-170)</label>
+                    <input type="number" id="score-input" min="2" max="170" value="61" placeholder="e.g. 100"
+                           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 shadow-sm text-lg">
+                </div>
+                <button id="calculate-btn"
+                        class="w-full sm:w-auto flex-shrink-0 px-6 py-2.5 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 transition duration-150 ease-in-out">
+                    Find Out
+                </button>
+            </div>
+            <div id="result-message" class="mt-4 text-center p-3 rounded-lg text-lg font-bold">
+                Enter a score between 2 and 170 and click 'Find Out'.
+            </div>
+        </div>
+
+        <!-- Dartboard and Key -->
+        <div class="flex flex-col lg:flex-row lg:space-x-8 items-start">
+            <!-- Dartboard SVG Container -->
+            <div id="dartboard-container" class="lg:w-1/2 w-full flex justify-center mb-8 lg:mb-0 aspect-square">
+                <!-- SVG will be injected here by JavaScript -->
+            </div>
+
+            <!-- Key and Recommendations -->
+            <div class="lg:w-1/2 w-full p-4 bg-white rounded-xl shadow-lg border border-gray-200">
+                <h2 class="text-2xl font-bold text-gray-800 mb-4">Recommended Checkouts</h2>
+                <div id="recommendation-list" class="space-y-4">
+                    <p class="text-gray-500 italic">No checkout calculated yet.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const SCORES = [20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 5];
+        const CENTER_X = 200;
+        const CENTER_Y = 200;
+        const RADII = {
+            CENTER: 6.35, // Double Bull (DB)
+            BULL_OUTER: 15.9, // Single Bull (S25)
+            TRIPLE_INNER: 99.1,
+            TRIPLE_OUTER: 107.9,
+            DOUBLE_INNER: 162.0,
+            DOUBLE_OUTER: 170.0,
+            TOTAL_RADIUS: 200.0,
+        };
+        
+        // Define the scores that should have red rings for Doubles and Triples
+        const RED_SCORES = new Set([20, 18, 13, 10, 2, 3, 7, 8, 14, 12]);
+
+        const resultMessageEl = document.getElementById('result-message');
+        const scoreInputEl = document.getElementById('score-input');
+        const calculateBtn = document.getElementById('calculate-btn');
+        const dartboardContainerEl = document.getElementById('dartboard-container');
+        const recommendationListEl = document.getElementById('recommendation-list');
+
+        let svgContent = '';
+
+        // --- 1. SVG Generation ---
+        function makeSectorPath(startAngle, endAngle, innerR, outerR) {
+            const startRad = (startAngle - 90) * (Math.PI / 180);
+            const endRad = (endAngle - 90) * (Math.PI / 180);
+
+            const outerX1 = CENTER_X + outerR * Math.cos(startRad);
+            const outerY1 = CENTER_Y + outerR * Math.sin(startRad);
+            const outerX2 = CENTER_X + outerR * Math.cos(endRad);
+            const outerY2 = CENTER_Y + outerR * Math.sin(endRad);
+
+            const innerX1 = CENTER_X + innerR * Math.cos(startRad);
+            const innerY1 = CENTER_Y + innerR * Math.sin(startRad);
+            const innerX2 = CENTER_X + innerR * Math.cos(endRad);
+            const innerY2 = CENTER_Y + innerR * Math.sin(endRad);
+
+            const largeArcFlag = (endAngle - startAngle) > 180 ? 1 : 0;
+
+            return [
+                `M ${innerX1} ${innerY1}`, 
+                `L ${outerX1} ${outerY1}`, 
+                `A ${outerR} ${outerR} 0 ${largeArcFlag} 1 ${outerX2} ${outerY2}`, 
+                `L ${innerX2} ${innerY2}`, 
+                `A ${innerR} ${innerR} 0 ${largeArcFlag} 0 ${innerX1} ${innerY1}`, 
+                `Z` 
+            ].join(' ');
+        }
+
+        function renderDartboard() {
+            let paths = [];
+            let angle = 360; 
+
+            for (let i = 0; i < 20; i++) {
+                const score = SCORES[i];
+                const startAngle = angle - 9;
+                const endAngle = angle + 9;
+                
+                const ringColorClass = RED_SCORES.has(score) ? 'red-ring' : 'green-ring';
+
+                paths.push(`
+                    <path d="${makeSectorPath(startAngle, endAngle, RADII.TRIPLE_OUTER, RADII.DOUBLE_INNER)}"
+                          id="S${score}O" class="dart-section ${SCORES.indexOf(score) % 2 === 0 ? 'single-bed-outer' : 'single-bed-inner'}" stroke-width="1"/>
+                `);
+
+                paths.push(`
+                    <path d="${makeSectorPath(startAngle, endAngle, RADII.DOUBLE_INNER, RADII.DOUBLE_OUTER)}"
+                          id="D${score}" class="dart-section ${ringColorClass}" stroke-width="1"/>
+                `);
+
+                paths.push(`
+                    <path d="${makeSectorPath(startAngle, endAngle, RADII.TRIPLE_INNER, RADII.TRIPLE_OUTER)}"
+                          id="T${score}" class="dart-section ${ringColorClass}" stroke-width="1"/>
+                `);
+
+                paths.push(`
+                    <path d="${makeSectorPath(startAngle, endAngle, RADII.BULL_OUTER, RADII.TRIPLE_INNER)}"
+                          id="S${score}I" class="dart-section ${SCORES.indexOf(score) % 2 === 0 ? 'single-bed-inner' : 'single-bed-outer'}" stroke-width="1"/>
+                `);
+
+                const textAngle = angle;
+                const textX = CENTER_X + (RADII.DOUBLE_OUTER + 20) * Math.cos((textAngle - 90) * (Math.PI / 180));
+                const textY = CENTER_Y + (RADII.DOUBLE_OUTER + 20) * Math.sin((textAngle - 90) * (Math.PI / 180));
+
+                paths.push(`
+                    <text x="${textX}" y="${textY}"
+                          text-anchor="middle" dominant-baseline="middle"
+                          class="font-bold text-xs" fill="white" style="font-size: 16px;">
+                        ${score}
+                    </text>
+                `);
+
+                angle += 18;
+            }
+
+            paths.push(`
+                <circle cx="${CENTER_X}" cy="${CENTER_Y}" r="${RADII.BULL_OUTER}" id="S25" class="dart-section bullseye-outer" stroke-width="1"/>
+                <circle cx="${CENTER_X}" cy="${CENTER_Y}" r="${RADII.CENTER}" id="DB" class="dart-section bullseye-center" stroke-width="1"/>
+            `);
+
+            paths.unshift(`
+                <circle cx="${CENTER_X}" cy="${CENTER_Y}" r="${RADII.DOUBLE_OUTER}" stroke="#1f2937" stroke-width="4" fill="none"/>
+            `);
+
+
+            svgContent = `
+                <svg id="dartboard-svg" viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="0" y="0" width="400" height="400" fill="#f3f4f6"/>
+                    <circle cx="${CENTER_X}" cy="${CENTER_Y}" r="${RADII.TOTAL_RADIUS}" fill="#2e2e2e"/>
+                    ${paths.join('')}
+                </svg>
+            `;
+            dartboardContainerEl.innerHTML = svgContent;
+        }
+
+        // --- 2. Checkout Logic (Updated for S25 and DB notation) ---
+
+        // Best 3-Dart Outs (Scores 61, 101-170)
+        // S25 = Single Bull (25), DB = Double Bull (50)
+        const CHECKOUTS_3 = {
+            // Updated 61 to use S25 notation
+            61: ['S25, D18', 'T15, D8|alternative'], 
+            
+            170: ['T20, T20, DB'], // DB is Double Bull
+            167: ['T20, T19, DB'],
+            164: ['T20, T18, DB'],
+            161: ['T20, T17, DB'],
+            160: ['T20, T20, D20'],
+            159: ['T20, T19, D17'], 
+            158: ['T20, T20, D19'],
+            157: ['T20, T19, D20'],
+            156: ['T20, T20, D18'],
+            155: ['T20, T19, D19'],
+            154: ['T20, T18, D20'],
+            153: ['T20, T19, D18'],
+            152: ['T20, T20, D16'],
+            151: ['T20, T17, D20'],
+            150: ['T20, T18, D18'],
+            149: ['T20, T19, D16'],
+            148: ['T20, T16, D20'],
+            147: ['T20, T17, D18'],
+            146: ['T20, T18, D16'],
+            145: ['T20, T15, D20'],
+            144: ['T20, T16, D18'],
+            143: ['T20, T17, D16'],
+            142: ['T20, T14, D20'],
+            141: ['T20, T15, D18'],
+            140: ['T20, T20, D10'],
+            139: ['T19, T20, D11'],
+            138: ['T20, T18, D12'],
+            137: ['T20, T19, D10'],
+            136: ['T20, T20, D8'],
+            135: ['T20, T17, D12'],
+            134: ['T20, T14, D16'],
+            133: ['T20, T19, D8'],
+            132: ['T20, T16, D12'],
+            131: ['T20, T13, D16'],
+            130: ['T20, T20, D5'],
+            129: ['T19, T20, D6'],
+            128: ['T20, T16, D10'],
+            127: ['T20, T17, D8'],
+            126: ['T19, T19, D20'],
+            125: ['T20, T15, D10'],
+            124: ['T20, T16, D8'],
+            123: ['T19, T16, D15'],
+            122: ['T18, T18, D7'],
+            121: ['T20, T11, D14'],
+            120: ['T20, S20, D20'],
+            119: ['T19, T18, D8'],
+            118: ['T20, S18, D20'],
+            117: ['T20, S17, D20'],
+            116: ['T20, S16, D20'],
+            115: ['T20, S15, D20'],
+            114: ['T20, S14, D20'],
+            113: ['T20, S13, D20'],
+            112: ['T20, S12, D20'],
+            111: ['T20, S11, D20'],
+            110: ['T20, S10, D20'],
+            109: ['T20, S9, D20'],
+            108: ['T20, S8, D20'],
+            107: ['T19, S18, D20'],
+            106: ['T20, S6, D20'],
+            105: ['T20, S5, D20'],
+            104: ['T18, S18, D20'],
+            103: ['T19, S14, D20'],
+            102: ['T20, S10, D16'],
+            101: ['T20, S9, D16'],
+        };
+
+        // Best 2-Dart Outs (2-52) - Can contain multiple options, safest first
+        const CHECKOUTS_2 = {
+            52: ['S12, D20', 'S20, D16|mistake'], // Primary is S12, D20. S20, D16 is high-risk (T20 busts).
+            51: ['S11, D20', 'S19, D16'], 
+            50: ['S10, D20', 'S18, D16|mistake'], // S18, D16 is high-risk (T18 busts).
+            49: ['S9, D20', 'S17, D16'],
+            48: ['S16, D16', 'S8, D20'],
+            47: ['S15, D16'],
+            46: ['S14, D16', 'S6, D20', 'S10, D18'], 
+            45: ['S13, D16'],
+            44: ['S12, D16'],
+            43: ['S11, D16'],
+            42: ['S10, D16'],
+            41: ['S9, D16'],
+            40: ['D20'], 
+            39: ['S7, D16'],
+            38: ['D19', 'S6, D16'],
+            37: ['S5, D16'],
+            36: ['D18'],
+            35: ['S3, D16'],
+            34: ['D17', 'S10, D12', 'S2, D16'], 
+            33: ['S1, D16', 'S17, D8'], 
+            32: ['D16'], 
+            31: ['S15, D8'], 
+            30: ['D15'],
+            29: ['S13, D8'],
+            28: ['D14'],
+            27: ['S11, D8'],
+            26: ['D13', 'S10, D8'], 
+            25: ['S9, D8'],
+            24: ['D12'],
+            23: ['S7, D8'],
+            22: ['D11', 'S6, D8'],
+            21: ['S5, D8'],
+            20: ['D10'],
+            19: ['S3, D8'],
+            18: ['D9', 'S10, D4'], 
+            17: ['S1, D8'],
+            16: ['D8'],
+            15: ['S7, D4'],
+            14: ['D7', 'S10, D2', 'S6, D4'], 
+            13: ['S5, D4'],
+            12: ['D6'],
+            11: ['S3, D4'],
+            10: ['D5', 'S2, D4'], 
+            9: ['S1, D4'],
+            8: ['D4'],  
+            7: ['S3, D2'],
+            6: ['D3', 'S2, D2'],
+            5: ['S1, D2'], 
+            4: ['D2', 'S2, D1'], 
+            3: ['S1, D1'],
+            2: ['D1'],
+        };
+
+        // Helper to retrieve the correct checkout map entry (always returns an array)
+        function getCheckoutEntry(score) {
+            if (score >= 2 && score <= 52) { 
+                const checkout = CHECKOUTS_2[score];
+                return Array.isArray(checkout) ? checkout : [checkout];
+            }
+            if (score >= 61 && score <= 170) {
+                const checkout = CHECKOUTS_3[score];
+                // Checkouts 101-170 are stored as single-option string, convert to array
+                return checkout ? (Array.isArray(checkout) ? checkout : [checkout]) : null;
+            }
+            return null;
+        }
+
+        /**
+         * Finds the single best primary recommended out (no alternatives or mistakes).
+         * @param {number} score The remaining score.
+         * @returns {string | null} The single optimal out string (e.g., 'T20, S20, D20').
+         */
+        function getPrimaryOut(score) {
+            if (isNaN(score) || score < 2 || score > 170 || score === 1 || score === 169) {
+                return null;
+            }
+            
+            // 1. Check Explicit Checkouts (2-52 and 61-170)
+            if (score >= 2 && score <= 52) {
+                const checkouts = getCheckoutEntry(score);
+                return checkouts ? checkouts[0] : null;
+            }
+            // Check for scores 61-170 that are explicitly defined (like 61, 101-170)
+            if (score >= 61) {
+                const checkout = getCheckoutEntry(score);
+                if (checkout) {
+                    return checkout[0]; 
+                }
+            }
+
+            // --- EXPLICIT TWO-DART SETUPS (53-60) - To leave D20 or D18 ---
+            if (score === 60) {
+                return 'S20, D20';
+            }
+            if (score === 59) {
+                return 'S19, D20';
+            }
+            if (score === 58) {
+                return 'S18, D20'; 
+            }
+            if (score === 57) {
+                return 'S17, D20'; 
+            }
+            if (score === 56) {
+                return 'S16, D20'; 
+            }
+            if (score === 55) {
+                return 'S15, D20'; 
+            }
+            if (score === 54) {
+                return 'S14, D20'; 
+            }
+            if (score === 53) {
+                return 'S13, D20'; 
+            }
+            
+            // Scores 62-100 (that aren't explicitly defined) - Use T20 primary route
+            if (score >= 62 && score <= 100) { 
+                const remainingT20 = score - 60;
+                
+                // If T20 leaves a valid 2-dart out (2-50)
+                if (remainingT20 >= 2 && remainingT20 <= 50) {
+                    const secondaryOuts = getCheckoutEntry(remainingT20);
+                    if (secondaryOuts) {
+                        return `T20, ${secondaryOuts[0]}`;
+                    }
+                }
+            }
+            
+            return null; // Should not happen with current score range/logic
+        }
+
+        /**
+         * Gets alternative or high-risk outs for specific scores.
+         * @param {number} score The remaining score.
+         * @returns {string[]} An array of alternative out strings with optional '|type' suffix.
+         */
+        function getAlternativeOuts(score) {
+            let alternatives = [];
+
+            // --- Explicit Alternatives for 61-170 (pulled from CHECKOUTS_3) ---
+            if (score >= 61) {
+                const checkouts = getCheckoutEntry(score);
+                if (checkouts && checkouts.length > 1) {
+                    // Start from the second option, as the first is the primary
+                    checkouts.slice(1).forEach(out => {
+                        alternatives.push(out);
+                    });
+                }
+            }
+            
+            // --- High-Risk/Mistake Alternatives (53-60) ---
+            
+            if (score === 58) {
+                // T18 is a recovery route when aiming for S18 (part of primary S18, D20)
+                alternatives.push('T18, D2|recovery'); 
+                // S20 leaves 38 (D19). If you hit T20 (60) you bust.
+                alternatives.push('S20, D19|mistake'); 
+            }
+            
+            if (score === 57) {
+                alternatives.push('S19, D19|mistake'); 
+            }
+            
+            if (score === 56) {
+                alternatives.push('S20, D18|mistake'); 
+            }
+            
+            if (score === 54) {
+                alternatives.push('S18, D18|mistake'); 
+            }
+            
+            // --- Alternatives for 2-52 (pulled from CHECKOUTS_2) ---
+            if (score >= 2 && score <= 52) {
+                const checkouts = getCheckoutEntry(score);
+                if (checkouts && checkouts.length > 1) {
+                    // Start from the second option, as the first is the primary
+                    checkouts.slice(1).forEach(out => {
+                        // Skip options that are already defined as 'mistake' above
+                        if (!out.includes('|mistake')) {
+                            alternatives.push(out + '|alternative');
+                        }
+                    });
+                }
+            }
+
+            return alternatives;
+        }
+
+        // --- 3. Highlighting and Display ---
+
+        /**
+         * Clears all previous highlights on the dartboard.
+         */
+        function clearHighlights() {
+            document.querySelectorAll('.dart-section').forEach(el => {
+                el.classList.remove('highlight-target');
+                el.style.fill = ''; // Clear inline style override
+            });
+            // Re-render to ensure dynamic colors are fully reset
+            const currentSvg = dartboardContainerEl.querySelector('svg');
+            if (currentSvg) {
+                dartboardContainerEl.innerHTML = svgContent;
+            } else {
+                renderDartboard();
+            }
+        }
+
+        /**
+         * Converts the out notation (e.g., 'T20', 'S25', 'DB') to the required SVG ID.
+         */
+        function notationToId(notation) {
+            // DB is Double Bull (50)
+            if (notation === 'DB') {
+                return notation;
+            }
+            // S25 is Single Bull (25)
+            if (notation === 'S25') {
+                return 'S25';
+            }
+
+            const type = notation[0];
+            const score = notation.substring(1);
+            if (type === 'S') {
+                return `S${score}I`; // Highlight the inner single bed.
+            }
+            return notation;
+        }
+
+        /**
+         * Highlights the PRIMARY recommended shots on the board.
+         * @param {string} outString The full out string (e.g., 'T20, S20, D20').
+         */
+        function highlightOut(outString) {
+            clearHighlights();
+            const shots = outString.split(', ');
+            shots.forEach(shot => {
+                let id = notationToId(shot);
+
+                // For Singles (S20, S1, etc.), highlight both inner and outer single beds
+                if (shot.startsWith('S') && shot !== 'S25') {
+                    const score = shot.substring(1);
+                    document.getElementById(`S${score}I`)?.classList.add('highlight-target');
+                    document.getElementById(`S${score}O`)?.classList.add('highlight-target');
+                } else if (shot === 'S25') {
+                    // S25 (Single Bull)
+                    document.getElementById('S25')?.classList.add('highlight-target');
+                } else if (shot === 'DB') {
+                    // DB (Double Bull)
+                    document.getElementById('DB')?.classList.add('highlight-target');
+                } else {
+                    document.getElementById(id)?.classList.add('highlight-target');
+                }
+
+                // Special handling for rings to give better contrast
+                const type = shot[0];
+                if (type === 'T' || type === 'D' || shot === 'S25' || shot === 'DB') {
+                    const el = document.getElementById(id);
+                    if (el) {
+                        el.style.fill = '#fcd34d'; // Strong yellow fill
+                    }
+                }
+            });
+        }
+
+        /**
+         * Parses a shot notation into its score and description.
+         * Updated to use S25 and DB notation.
+         */
+        function parseShot(shot) {
+            let score = 0;
+            let description = '';
+
+            if (shot === 'DB') {
+                score = 50;
+                description = 'Double Bull (50)'; 
+            } else if (shot === 'S25') { 
+                score = 25; 
+                description = 'Single Bull (25)';
+            } else {
+                const type = shot[0];
+                const base = parseInt(shot.substring(1), 10);
+                if (type === 'S') {
+                    score = base;
+                    description = `Single ${base} (${base})`;
+                } else if (type === 'T') {
+                    score = base * 3;
+                    description = `Triple ${base} (${score})`;
+                } else if (type === 'D') {
+                    score = base * 2;
+                    description = `Double ${base} (${score})`;
+                }
+            }
+            return { score, description };
+        }
+
+        /**
+         * Displays the checkout shots for all options in a human-readable list.
+         * @param {number} initialScore The starting score.
+         * @param {string[]} outStrings An array of full out strings with optional '|type' suffix.
+         */
+        function displayRecommendation(initialScore, outStrings) {
+            let html = '';
+
+            for (let optionIndex = 0; optionIndex < outStrings.length; optionIndex++) {
+                const fullNotation = outStrings[optionIndex];
+                const parts = fullNotation.split('|');
+                const outString = parts[0];
+                const type = parts.length > 1 ? parts[1] : 'primary'; // Default to primary
+                
+                const shots = outString.split(', ');
+                let currentScore = initialScore;
+                
+                // Determine styling and message
+                let borderClass = 'border-gray-300 bg-gray-50';
+                let messageHtml = '';
+                let titleClass = 'text-gray-700';
+                let label = 'Alternative Out';
+
+                if (type === 'primary') {
+                    borderClass = 'border-blue-500 bg-blue-50';
+                    titleClass = 'text-blue-700';
+                    label = 'Recommended Safe Out';
+                } else if (type === 'mistake') {
+                    borderClass = 'border-red-500 bg-red-50';
+                    titleClass = 'text-red-700';
+                    label = 'High-Risk Mistake Out';
+                    
+                    let riskMessage = '';
+                    
+                    if (initialScore === 58 && outString === 'S20, D19') {
+                         riskMessage = `🚨 **WARNING**: Targeting S20 is high-risk. Hitting the **Triple 20 (60)** will **bust your score** (over ${initialScore}).`;
+                    }
+                    else if (initialScore === 57 && outString === 'S19, D19') {
+                         riskMessage = `🚨 **EXTREME RISK**: Targeting S19 is dangerous. Hitting the **Triple 19 (57)** will **bust your score** (remaining 0, but the next dart is not a double).`;
+                    }
+                    else if (initialScore === 56 && outString === 'S20, D18') {
+                         riskMessage = `🚨 **WARNING**: Targeting S20 is high-risk. Hitting **T20 (60)** will **bust your score** (over ${initialScore}).`;
+                    } else if (initialScore === 54 && outString === 'S18, D18') {
+                         riskMessage = `🚨 **WARNING**: Targeting S18 is high-risk. Hitting **T18 (54)** will **bust your score** (remaining 0, but no double remains).`;
+                    } else if (initialScore === 52 && outString === 'S20, D16') {
+                         riskMessage = `🚨 **WARNING**: Targeting S20 is high-risk. Hitting **T20 (60)** will **bust your score** (over ${initialScore}).`;
+                    } else if (initialScore === 50 && outString === 'S18, D16') {
+                         riskMessage = `🚨 **WARNING**: Targeting S18 is high-risk. Hitting **T18 (54)** will **bust your score** (over ${initialScore}).`;
+                    }
+
+                    messageHtml = `
+                        <p class="mt-2 text-sm font-semibold text-red-700 p-2 bg-red-100 rounded-lg">
+                            ${riskMessage}
+                        </p>
+                    `;
+                } else if (type === 'recovery') {
+                    borderClass = 'border-orange-500 bg-orange-50';
+                    titleClass = 'text-orange-700';
+                    label = 'Recovery/Alternate Out';
+                    
+                    if (initialScore === 58 && outString === 'T18, D2') {
+                         messageHtml = `
+                            <p class="mt-2 text-sm font-semibold text-orange-700 p-2 bg-orange-100 rounded-lg">
+                                **RECOVERY ROUTE**: This is the required path if you were targeting the **Single 18** (S18) for the primary out and **accidentally hit the Triple 18** (T18) instead (T18 leaves 4, D2).
+                            </p>
+                        `;
+                    } else {
+                        // Generic message for other 'alternative' types if they existed
+                        messageHtml = `
+                            <p class="mt-2 text-sm font-semibold text-orange-700 p-2 bg-orange-100 rounded-lg">
+                                This is a less common 3-dart checkout or alternative path.
+                            </p>
+                        `;
+                    }
+                } else if (type === 'alternative') {
+                    // Specific message for T15, D8 for 61 (User requested strategy)
+                    if (initialScore === 61 && outString === 'T15, D8') {
+                         messageHtml = `
+                            <p class="mt-2 text-sm font-semibold text-orange-700 p-2 bg-orange-100 rounded-lg">
+                                **FORGIVING START STRATEGY**: Targeting **T15** is forgiving because hitting the **Single 15** (S15) leaves 46. You can complete the out from 46 with **S6, D20** or **S10, D18**.
+                            </p>
+                        `;
+                    } else {
+                        // Generic message for other alternatives
+                        messageHtml = `
+                            <p class="mt-2 text-sm font-semibold text-gray-700 p-2 bg-gray-100 rounded-lg">
+                                This is a strong alternative route for the checkout.
+                            </p>
+                        `;
+                    }
+                }
+                
+                let title = `Option ${optionIndex + 1}: **${outString}** (${label})`;
+                
+                html += `
+                    <div class="p-4 rounded-xl shadow-md border-2 ${borderClass}">
+                        <h4 class="text-lg font-bold mb-3 ${titleClass}">${title}</h4>
+                        <div class="space-y-2">
+                `;
+
+                shots.forEach((shot, dartIndex) => {
+                    const { score, description } = parseShot(shot);
+                    currentScore -= score;
+
+                    html += `
+                        <div class="flex justify-between items-center text-sm">
+                            <span class="font-semibold text-gray-700">Dart ${dartIndex + 1}:</span>
+                            <span class="font-bold text-lg">${shot}</span>
+                            <span class="text-xs text-gray-500">${description}</span>
+                            <span class="font-medium">Remaining: <span class="${currentScore === 0 ? 'text-green-600' : 'text-red-500'}">${currentScore}</span></span>
+                        </div>
+                    `;
+                });
+
+                html += messageHtml; // Inject message here
+
+                html += `
+                        </div>
+                    </div>
+                `;
+            }
+
+            recommendationListEl.innerHTML = html;
+        }
+
+        // --- 4. Main Calculation Handler ---
+
+        function handleCalculate() {
+            const score = parseInt(scoreInputEl.value, 10);
+            
+            // 1. Validation and Edge Cases
+            if (isNaN(score) || score < 2 || score > 170) {
+                resultMessageEl.innerHTML = '<span class="text-red-600">Please enter a valid score between 2 and 170.</span>';
+                recommendationListEl.innerHTML = '<p class="text-gray-500 italic">Invalid score entered.</p>';
+                clearHighlights();
+                return;
+            }
+
+            if (score === 1 || score >= 171) {
+                resultMessageEl.innerHTML = '<span class="text-red-600">A score of 1 or scores over 170 cannot be checked out with 3 darts.</span>';
+                recommendationListEl.innerHTML = '<p class="text-gray-500 italic">Impossible out.</p>';
+                clearHighlights();
+                return;
+            }
+            
+            // 2. Get Outs
+            const primaryOut = getPrimaryOut(score);
+            const alternativeOuts = getAlternativeOuts(score);
+
+            if (!primaryOut) {
+                resultMessageEl.innerHTML = `<span class="text-red-600">Score of ${score} is not a standard checkout.</span>`;
+                recommendationListEl.innerHTML = '<p class="text-gray-500 italic">No standard checkout found.</p>';
+                clearHighlights();
+                return;
+            }
+
+            // Combine primary and alternatives for display
+            const allOuts = [primaryOut, ...alternativeOuts];
+
+            // 3. Update UI
+            resultMessageEl.innerHTML = `<span class="text-green-600">Best out for ${score} found!</span>`;
+            highlightOut(primaryOut);
+            displayRecommendation(score, allOuts);
+        }
+
+
+        // --- 5. Event Listeners and Initialization ---
+
+        document.addEventListener('DOMContentLoaded', () => {
+            renderDartboard();
+
+            // Set default value and calculate on load for initial display
+            scoreInputEl.value = 61; // Set default to 61
+            handleCalculate();
+            
+            calculateBtn.addEventListener('click', handleCalculate);
+            scoreInputEl.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    handleCalculate();
+                }
+            });
+        });
+    </script>
+</body>
+</html>
