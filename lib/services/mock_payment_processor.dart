@@ -9,7 +9,7 @@ class MockPaymentProcessor implements PaymentProcessor {
     Map<String, dynamic> paymentDetails,
   ) async {
     // Simulate payment processing delay
-    await Future.delayed(Duration(seconds: 1));
+    await Future.delayed(const Duration(seconds: 1));
 
     // Validate payment details
     if (!validatePaymentDetails(paymentDetails)) {
@@ -48,7 +48,7 @@ class MockPaymentProcessor implements PaymentProcessor {
   @override
   Future<PaymentResult> refundPayment(String transactionId, double amount) async {
     // Simulate refund processing delay
-    await Future.delayed(Duration(milliseconds: 500));
+    await Future.delayed(const Duration(milliseconds: 500));
 
     // Simulate successful refund
     final refundId = 'REF_${DateTime.now().millisecondsSinceEpoch}';
